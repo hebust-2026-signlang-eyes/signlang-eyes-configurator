@@ -1,5 +1,6 @@
 // SLM1 BLE protocol codec for signlang_manager.
-// See BLE_PROTOCOL_BROWSER_HOST.md for the wire format spec.
+// Keep in sync with the device-side implementation:
+// https://github.com/syxxzzr/signlang-eyes/blob/main/src/signlang_manager/manager_service.cpp
 
 export const SERVICE_UUID = '3b5f1000-4ad2-4f53-9a65-6f6d65796573'
 export const RX_UUID = '3b5f1001-4ad2-4f53-9a65-6f6d65796573'
@@ -282,6 +283,7 @@ export interface GestureInfo {
   id: number
   enabled: boolean
   sampleCount: number
+  calibrated: boolean
   name: string
 }
 
@@ -299,6 +301,7 @@ export function parseGestureList(payload: Uint8Array): GestureInfo[] {
       id: r.u32(),
       enabled: r.u8() !== 0,
       sampleCount: r.u32(),
+      calibrated: r.u8() !== 0,
       name: r.string(),
     })
   }

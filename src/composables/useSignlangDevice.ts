@@ -146,11 +146,12 @@ export function useSignlangDevice() {
       deviceName.value = client.deviceName
       state.value = 'connected'
       status.value = await client.getStatus()
-      gestures.value = await client.listGestures().catch(() => [])
+      gestures.value = await client.listGestures()
       await setStreaming(true)
       pushNotice('success', t('notices.bluetoothConnected'), deviceName.value || 'SignLang Eyes')
     } catch (err) {
       state.value = 'disconnected'
+      await client.disconnect()
       notifyError(err, t('notices.bluetoothConnectFailed'))
     }
   }
