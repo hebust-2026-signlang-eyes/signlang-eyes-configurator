@@ -54,6 +54,29 @@ export interface DecodedPacket {
   payload: Uint8Array
 }
 
+export const ProtocolDecodeErrorCode = {
+  PacketTooShort: 'packetTooShort',
+  BadMagic: 'badMagic',
+  UnsupportedVersion: 'unsupportedVersion',
+  UnsupportedHeaderSize: 'unsupportedHeaderSize',
+  PacketSizeMismatch: 'packetSizeMismatch',
+  PayloadCrcMismatch: 'payloadCrcMismatch',
+  PayloadTooShort: 'payloadTooShort',
+} as const
+
+export type ProtocolDecodeErrorCode =
+  (typeof ProtocolDecodeErrorCode)[keyof typeof ProtocolDecodeErrorCode]
+
+export class ProtocolDecodeError extends Error {
+  constructor(
+    readonly code: ProtocolDecodeErrorCode,
+    readonly details: Readonly<Record<string, number>> = {},
+  ) {
+    super(code)
+    this.name = 'ProtocolDecodeError'
+  }
+}
+
 // --- CRC32 (poly 0xEDB88320, init 0xFFFFFFFF, final xor) ---------------------
 
 export function crc32(bytes: Uint8Array): number {
@@ -102,19 +125,29 @@ export function encodePacket({
 }
 
 export function decodePacket(bytes: Uint8Array): DecodedPacket {
-  if (bytes.length < HEADER_SIZE) throw new Error('packet shorter than header')
+  if (bytes.length < HEADER_SIZE) {
+    throw new ProtocolDecodeError(ProtocolDecodeErrorCode.PacketTooShort, {
+      actual: bytes.length,
+      expected: HEADER_SIZE,
+    })
+  }
   if (
     bytes[0] !== 0x53 ||
     bytes[1] !== 0x4c ||
     bytes[2] !== 0x4d ||
     bytes[3] !== 0x31
   ) {
-    throw new Error('bad magic')
+    throw new ProtocolDecodeError(ProtocolDecodeErrorCode.BadMagic)
   }
 
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
   const version = view.getUint8(4)
-  if (version !== PROTOCOL_VERSION) throw new Error(`unsupported version ${version}`)
+  if (version !== PROTOCOL_VERSION) {
+    throw new ProtocolDecodeError(ProtocolDecodeErrorCode.UnsupportedVersion, {
+      version,
+      expected: PROTOCOL_VERSION,
+    })
+  }
 
   const type = view.getUint8(5)
   const commandId = view.getUint16(6, true)
@@ -123,11 +156,28 @@ export function decodePacket(bytes: Uint8Array): DecodedPacket {
   const headerSize = view.getUint16(14, true)
   const payloadSize = view.getUint32(16, true)
   const expectedCrc = view.getUint32(20, true)
-  if (headerSize !== HEADER_SIZE) throw new Error('unsupported header size')
-  if (bytes.length !== headerSize + payloadSize) throw new Error('packet size mismatch')
+  if (headerSize !== HEADER_SIZE) {
+    throw new ProtocolDecodeError(ProtocolDecodeErrorCode.UnsupportedHeaderSize, {
+      actual: headerSize,
+      expected: HEADER_SIZE,
+    })
+  }
+  const expectedPacketSize = headerSize + payloadSize
+  if (bytes.length !== expectedPacketSize) {
+    throw new ProtocolDecodeError(ProtocolDecodeErrorCode.PacketSizeMismatch, {
+      actual: bytes.length,
+      expected: expectedPacketSize,
+    })
+  }
 
   const payload = bytes.slice(headerSize)
-  if (crc32(payload) !== expectedCrc) throw new Error('payload crc mismatch')
+  const actualCrc = crc32(payload)
+  if (actualCrc !== expectedCrc) {
+    throw new ProtocolDecodeError(ProtocolDecodeErrorCode.PayloadCrcMismatch, {
+      actual: actualCrc,
+      expected: expectedCrc,
+    })
+  }
 
   return { type, commandId, requestId, flags, payload }
 }
@@ -202,31 +252,45 @@ export class PayloadReader {
     return this.bytes.length - this.offset
   }
 
+  private requireLength(len: number): void {
+    if (this.remaining < len) {
+      throw new ProtocolDecodeError(ProtocolDecodeErrorCode.PayloadTooShort, {
+        remaining: this.remaining,
+        expected: len,
+      })
+    }
+  }
+
   u8(): number {
+    this.requireLength(1)
     const v = this.view.getUint8(this.offset)
     this.offset += 1
     return v
   }
 
   u16(): number {
+    this.requireLength(2)
     const v = this.view.getUint16(this.offset, true)
     this.offset += 2
     return v
   }
 
   u32(): number {
+    this.requireLength(4)
     const v = this.view.getUint32(this.offset, true)
     this.offset += 4
     return v
   }
 
   u64(): bigint {
+    this.requireLength(8)
     const v = this.view.getBigUint64(this.offset, true)
     this.offset += 8
     return v
   }
 
   f32(): number {
+    this.requireLength(4)
     const v = this.view.getFloat32(this.offset, true)
     this.offset += 4
     return v
@@ -239,7 +303,7 @@ export class PayloadReader {
   }
 
   bytesOfLength(len: number): Uint8Array {
-    if (this.remaining < len) throw new Error('payload shorter than expected')
+    this.requireLength(len)
     const slice = this.bytes.subarray(this.offset, this.offset + len)
     this.offset += len
     return slice
@@ -315,6 +379,21 @@ export interface StatusResponse {
   message: string
 }
 
+export class ProtocolStatusError extends Error {
+  readonly statusName: string
+
+  constructor(
+    readonly command: string,
+    readonly status: number,
+    readonly deviceMessage: string,
+  ) {
+    const statusName = STATUS_NAME[status] ?? String(status)
+    super(`${command} [${statusName}]${deviceMessage ? `: ${deviceMessage}` : ''}`)
+    this.name = 'ProtocolStatusError'
+    this.statusName = statusName
+  }
+}
+
 // Reads the leading `u16 status` and, for non-OK responses, the trailing
 // `string message`. Returns message='' when none is present.
 export function readStatusResponse(payload: Uint8Array): StatusResponse {
@@ -324,9 +403,8 @@ export function readStatusResponse(payload: Uint8Array): StatusResponse {
   return { status, message }
 }
 
-export function statusError(label: string, res: StatusResponse): Error {
-  const name = STATUS_NAME[res.status] ?? String(res.status)
-  return new Error(`${label} 失败: ${name}${res.message ? ` - ${res.message}` : ''}`)
+export function statusError(label: string, res: StatusResponse): ProtocolStatusError {
+  return new ProtocolStatusError(label, res.status, res.message)
 }
 
 // --- Gesture upload blob (§10) -----------------------------------------------
