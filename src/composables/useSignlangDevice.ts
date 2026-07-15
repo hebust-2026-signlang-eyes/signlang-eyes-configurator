@@ -1,7 +1,9 @@
 import { computed, ref, shallowRef } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { toast } from 'vue-sonner'
+import { SignlangClientError } from '@/ble/errors'
 import { SignlangClient } from '@/ble/signlangClient'
+import { ProtocolDecodeError, ProtocolStatusError } from '@/ble/protocol'
 import type {
   DeviceStatus,
   GestureInfo,
@@ -19,7 +21,7 @@ const RECORDING_COUNTDOWN_TICK_MS = 8
 const RECOGNITION_TTL_MS = 1000
 
 export function useSignlangDevice() {
-  const { t } = useI18n()
+  const { t, te } = useI18n()
   const supported = SignlangClient.isSupported()
 
   const state = ref<ConnectionState>('disconnected')
@@ -85,7 +87,44 @@ export function useSignlangDevice() {
   }
 
   function notifyError(err: unknown, title = t('notices.operationFailed')) {
-    pushNotice('error', title, err instanceof Error ? err.message : String(err))
+    let message: string
+    if (err instanceof ProtocolStatusError) {
+      message = localizeProtocolStatusError(err)
+    } else if (err instanceof ProtocolDecodeError) {
+      message = localizeProtocolDecodeError(err)
+    } else if (err instanceof SignlangClientError) {
+      message = localizeSignlangClientError(err)
+    } else {
+      message = err instanceof Error ? err.message : String(err)
+    }
+    pushNotice('error', title, message)
+  }
+
+  function localizeProtocolStatusError(err: ProtocolStatusError): string {
+    const commandKey = `protocol.commands.${err.command}`
+    const statusKey = `protocol.statuses.${err.statusName}`
+    const command = te(commandKey) ? t(commandKey) : err.command
+    const status = te(statusKey)
+      ? t(statusKey)
+      : t('protocol.unknownStatus', { status: err.status })
+
+    return err.deviceMessage
+      ? t('protocol.errorWithMessage', {
+          command,
+          status,
+          message: err.deviceMessage,
+        })
+      : t('protocol.error', { command, status })
+  }
+
+  function localizeProtocolDecodeError(err: ProtocolDecodeError): string {
+    const key = `protocol.decodeErrors.${err.code}`
+    return te(key) ? t(key, err.details) : err.code
+  }
+
+  function localizeSignlangClientError(err: SignlangClientError): string {
+    const key = `protocol.clientErrors.${err.code}`
+    return te(key) ? t(key) : err.code
   }
 
   function resetAfterDisconnect(notify: boolean) {

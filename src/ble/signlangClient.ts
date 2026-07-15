@@ -2,6 +2,7 @@
 // TX notification reassembly, request/response correlation, and the
 // real-time handpose stream.
 
+import { SignlangClientError, SignlangClientErrorCode } from './errors'
 import {
   CommandId,
   PacketType,
@@ -101,7 +102,7 @@ export class SignlangClient {
 
   async connect(): Promise<void> {
     if (!navigator.bluetooth) {
-      throw new Error('Web Bluetooth 不可用，请使用 Chrome / Edge 并通过 HTTPS 或 localhost 访问。')
+      throw new SignlangClientError(SignlangClientErrorCode.WebBluetoothUnavailable)
     }
 
     const device = await navigator.bluetooth.requestDevice({
@@ -110,7 +111,9 @@ export class SignlangClient {
     this.device = device
     device.addEventListener('gattserverdisconnected', this.onGattDisconnected)
 
-    if (!device.gatt) throw new Error('设备没有 GATT server。')
+    if (!device.gatt) {
+      throw new SignlangClientError(SignlangClientErrorCode.MissingGattServer)
+    }
     this.server = await device.gatt.connect()
 
     const service = await this.server.getPrimaryService(SERVICE_UUID)
@@ -143,7 +146,7 @@ export class SignlangClient {
     this.device?.removeEventListener('gattserverdisconnected', this.onGattDisconnected)
     for (const [, entry] of this.pending) {
       clearTimeout(entry.timer)
-      entry.reject(new Error('连接已断开'))
+      entry.reject(new SignlangClientError(SignlangClientErrorCode.Disconnected))
     }
     this.pending.clear()
     this.notifyBuffer = new Uint8Array(0)
@@ -166,7 +169,9 @@ export class SignlangClient {
         this.notifyBuffer[3] !== 0x31
       ) {
         // Sync lost — drop the buffer rather than crash the stream.
-        this.callbacks.onError?.(new Error('SLM1 packet 同步丢失，已重置缓冲区'))
+        this.callbacks.onError?.(
+          new SignlangClientError(SignlangClientErrorCode.PacketSyncLost),
+        )
         this.notifyBuffer = new Uint8Array(0)
         return
       }
@@ -218,7 +223,9 @@ export class SignlangClient {
   // --- Commands -------------------------------------------------------------
 
   private async writeCommand(commandId: number, payload: Uint8Array): Promise<DecodedPacket> {
-    if (!this.rx) throw new Error('未连接到设备')
+    if (!this.rx) {
+      throw new SignlangClientError(SignlangClientErrorCode.NotConnected)
+    }
     const requestId = this.nextRequestId++
     const packet = encodePacket({
       type: PacketType.Request,
@@ -231,7 +238,7 @@ export class SignlangClient {
     const responsePromise = new Promise<DecodedPacket>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(key)
-        reject(new Error('BLE 命令超时'))
+        reject(new SignlangClientError(SignlangClientErrorCode.CommandTimeout))
       }, REQUEST_TIMEOUT_MS)
       this.pending.set(key, { resolve, reject, timer })
     })
@@ -252,7 +259,7 @@ export class SignlangClient {
 
   async getCapabilities(): Promise<DeviceStatus> {
     const resp = await this.writeCommand(CommandId.GetCapabilities, new Uint8Array())
-    return parseStatus(resp.payload)
+    return parseStatus(resp.payload, 'GetCapabilities')
   }
 
   private expectOk(payload: Uint8Array, label: string): void {
@@ -365,8 +372,12 @@ export class SignlangClient {
   // session is aborted.
   async uploadGesture(opts: UploadGestureOptions): Promise<number> {
     const name = opts.name.trim()
-    if (!name) throw new Error('手势名称不能为空')
-    if (opts.frames.length === 0) throw new Error('没有可上传的帧')
+    if (!name) {
+      throw new SignlangClientError(SignlangClientErrorCode.GestureNameRequired)
+    }
+    if (opts.frames.length === 0) {
+      throw new SignlangClientError(SignlangClientErrorCode.GestureFramesRequired)
+    }
 
     const blob = buildGestureBlob(opts.frames)
     const transferId = Math.floor(Math.random() * 0x1_0000_0000) >>> 0
