@@ -4,6 +4,7 @@ import {
   KEYPOINT_COUNT,
   PayloadWriter,
   ProtocolDecodeErrorCode,
+  STREAM_HANDPOSE_PAYLOAD_VERSION,
   parseHandposeFrame,
   parseStreamHandposePayload,
 } from '../../../src/ble/protocol'
@@ -89,7 +90,7 @@ describe('parseHandposeFrame', () => {
 })
 
 describe('parseStreamHandposePayload', () => {
-  it('treats a non-v2 payload as a legacy handpose frame', () => {
+  it('treats a format-1 payload as a legacy handpose frame', () => {
     const payload = Uint8Array.of(1, 2, 3)
     const parsed = parseStreamHandposePayload(payload)
 
@@ -97,10 +98,10 @@ describe('parseStreamHandposePayload', () => {
     expect(parsed.recognition).toBeNull()
   })
 
-  it('parses a v2 wrapper without recognition data', () => {
+  it('parses a v3 wrapper without recognition data', () => {
     const handpose = Uint8Array.of(1, 2, 3)
     const payload = new PayloadWriter()
-      .u8(2)
+      .u8(STREAM_HANDPOSE_PAYLOAD_VERSION)
       .u8(0)
       .u16(0)
       .u32(handpose.length)
@@ -113,7 +114,40 @@ describe('parseStreamHandposePayload', () => {
     })
   })
 
-  it('parses recognition data from a v2 wrapper', () => {
+  it('parses recognition data from a v3 wrapper using the compact layout', () => {
+    const handpose = Uint8Array.of(1, 2, 3)
+    const gestureName = '挥手'
+    const payload = new PayloadWriter()
+      .u8(STREAM_HANDPOSE_PAYLOAD_VERSION)
+      .u8(1)
+      .u16(0)
+      .u32(handpose.length)
+      .pushBytes(handpose)
+      .u64(100n)
+      .u64(200n)
+      .u8(1)
+      .u32(7)
+      .f32(0.25)
+      .string(gestureName)
+      .finish()
+
+    expect(payload).toHaveLength(
+      35 + handpose.length + new TextEncoder().encode(gestureName).length,
+    )
+    expect(parseStreamHandposePayload(payload)).toEqual({
+      handposePayload: handpose,
+      recognition: {
+        sequenceNumber: 100n,
+        timestampNs: 200n,
+        recognized: true,
+        gestureId: 7,
+        distance: 0.25,
+        gestureName,
+      },
+    })
+  })
+
+  it('parses a v2 wrapper while discarding removed confidence fields', () => {
     const handpose = Uint8Array.of(1, 2, 3)
     const payload = new PayloadWriter()
       .u8(2)
@@ -139,22 +173,49 @@ describe('parseStreamHandposePayload', () => {
         timestampNs: 200n,
         recognized: true,
         gestureId: 7,
-        confidence: 0.875,
-        secondConfidence: 0.5,
-        confidenceMargin: 0.375,
         distance: 0.25,
         gestureName: 'wave',
       },
     })
   })
 
-  it('rejects a v2 wrapper with a truncated handpose payload', () => {
+  it('rejects an unsupported stream payload version', () => {
+    expectProtocolDecodeError(
+      () => parseStreamHandposePayload(Uint8Array.of(4)),
+      ProtocolDecodeErrorCode.UnsupportedVersion,
+      { version: 4, expected: STREAM_HANDPOSE_PAYLOAD_VERSION },
+    )
+  })
+
+  it('rejects a v3 wrapper with a truncated handpose payload', () => {
     const payload = new PayloadWriter()
-      .u8(2)
+      .u8(STREAM_HANDPOSE_PAYLOAD_VERSION)
       .u8(0)
       .u16(0)
       .u32(4)
       .pushBytes(Uint8Array.of(1, 2))
+      .finish()
+
+    expectProtocolDecodeError(
+      () => parseStreamHandposePayload(payload),
+      ProtocolDecodeErrorCode.PayloadTooShort,
+      { remaining: 2, expected: 4 },
+    )
+  })
+
+  it('rejects a v3 wrapper with a truncated gesture name', () => {
+    const payload = new PayloadWriter()
+      .u8(STREAM_HANDPOSE_PAYLOAD_VERSION)
+      .u8(1)
+      .u16(0)
+      .u32(0)
+      .u64(100n)
+      .u64(200n)
+      .u8(1)
+      .u32(7)
+      .f32(0.25)
+      .u16(4)
+      .pushBytes(Uint8Array.of(0x61, 0x62))
       .finish()
 
     expectProtocolDecodeError(

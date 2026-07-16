@@ -469,9 +469,6 @@ export interface RecognitionResult {
   timestampNs: bigint
   recognized: boolean
   gestureId: number
-  confidence: number
-  secondConfidence: number
-  confidenceMargin: number
   distance: number
   gestureName: string
 }
@@ -481,15 +478,22 @@ export interface StreamHandposePayload {
   recognition: RecognitionResult | null
 }
 
-export function parseStreamHandposePayload(payload: Uint8Array): StreamHandposePayload {
-  if (payload[0] !== 2) {
-    return { handposePayload: payload, recognition: null }
-  }
+export const STREAM_HANDPOSE_PAYLOAD_VERSION = 3
 
+export function parseStreamHandposePayload(payload: Uint8Array): StreamHandposePayload {
   const r = new PayloadReader(payload)
   const version = r.u8()
-  if (version !== 2) {
+
+  // Before the stream wrapper was introduced, the payload started directly
+  // with HandposeFrame format 1.
+  if (version === 1) {
     return { handposePayload: payload, recognition: null }
+  }
+  if (version !== 2 && version !== STREAM_HANDPOSE_PAYLOAD_VERSION) {
+    throw new ProtocolDecodeError(ProtocolDecodeErrorCode.UnsupportedVersion, {
+      version,
+      expected: STREAM_HANDPOSE_PAYLOAD_VERSION,
+    })
   }
 
   const flags = r.u8()
@@ -501,16 +505,24 @@ export function parseStreamHandposePayload(payload: Uint8Array): StreamHandposeP
     return { handposePayload, recognition: null }
   }
 
+  const sequenceNumber = r.u64()
+  const timestampNs = r.u64()
+  const recognized = r.u8() !== 0
+  const gestureId = r.u32()
+
+  if (version === 2) {
+    r.f32() // confidence (removed in version 3)
+    r.f32() // second_confidence (removed in version 3)
+    r.f32() // confidence_margin (removed in version 3)
+  }
+
   return {
     handposePayload,
     recognition: {
-      sequenceNumber: r.u64(),
-      timestampNs: r.u64(),
-      recognized: r.u8() !== 0,
-      gestureId: r.u32(),
-      confidence: r.f32(),
-      secondConfidence: r.f32(),
-      confidenceMargin: r.f32(),
+      sequenceNumber,
+      timestampNs,
+      recognized,
+      gestureId,
       distance: r.f32(),
       gestureName: r.string(),
     },

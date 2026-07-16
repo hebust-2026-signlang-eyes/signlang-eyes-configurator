@@ -470,23 +470,16 @@ function drawRecognitionBadge(
   if (!recognition || !recognition.recognized || !recognition.gestureName.trim()) return
 
   const colors = sceneColors()
-  const confidence = `${Math.round(recognition.confidence * 100)}%`
   const label = recognition.gestureName
   const paddingX = 12
   const height = 34
-  const gap = 8
   const xMax = width - 14
   const y = 14
 
   ctx.save()
   ctx.font = '700 14px Inter, system-ui, sans-serif'
   const labelWidth = ctx.measureText(label).width
-  ctx.font = '600 12px Inter, system-ui, sans-serif'
-  const confidenceWidth = ctx.measureText(confidence).width
-  const badgeWidth = Math.min(
-    width - 28,
-    labelWidth + confidenceWidth + paddingX * 2 + gap + 10,
-  )
+  const badgeWidth = Math.min(width - 28, labelWidth + paddingX * 2)
   const x = xMax - badgeWidth
 
   ctx.shadowColor = colors.shadow
@@ -509,11 +502,6 @@ function drawRecognitionBadge(
   ctx.font = '700 14px Inter, system-ui, sans-serif'
   ctx.fillStyle = colors.foreground
   ctx.fillText(label, x + paddingX, y + height / 2, badgeWidth - paddingX * 2)
-
-  ctx.textAlign = 'right'
-  ctx.font = '600 12px Inter, system-ui, sans-serif'
-  ctx.fillStyle = colors.accent
-  ctx.fillText(confidence, x + badgeWidth - paddingX, y + height / 2)
   ctx.restore()
 }
 
